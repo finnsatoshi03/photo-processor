@@ -63,7 +63,27 @@ def health():
         "model": config.model_name(),
         "license": config.model_license(),
         "gpu": pipeline.gpu_active(),
+        # Per-model readiness so clients can offer a model picker and show
+        # download progress states: unloaded | loading | ready.
+        "models": pipeline.model_states(),
     }
+
+
+@app.post("/models/warm")
+async def warm_model(request: Request):
+    """Start loading a model in the background (idempotent). The client polls
+    /health until the model reports ready."""
+    try:
+        body = await request.json()
+        model = body.get("model") if isinstance(body, dict) else None
+    except Exception:
+        model = None
+    if model not in config.ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail="model must be one of: " + ", ".join(sorted(config.ALLOWED_MODELS)),
+        )
+    return {"model": model, "state": pipeline.ensure_model(model)}
 
 
 @app.post("/process")
@@ -104,12 +124,30 @@ async def process(request: Request):
         )
         bg_rgb = pipeline.parse_hex_color(_opt_str(fields.get("bg_color")) or "#FFFFFF")
         auto_crop = _opt_bool(fields.get("auto_crop"), default=True)
+        model = _opt_str(fields.get("model")) or config.model_name()
+        if model not in config.ALLOWED_MODELS:
+            raise ValueError(
+                "model must be one of: " + ", ".join(sorted(config.ALLOWED_MODELS))
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
+    state = pipeline.ensure_model(model)
+    if state != "ready":
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model {model} is still downloading/loading; retry shortly",
+        )
+
     try:
         png, face_detected = await anyio.to_thread.run_sync(
-            pipeline.process_image, image_bytes, width_px, height_px, bg_rgb, auto_crop
+            pipeline.process_image,
+            image_bytes,
+            width_px,
+            height_px,
+            bg_rgb,
+            auto_crop,
+            model,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

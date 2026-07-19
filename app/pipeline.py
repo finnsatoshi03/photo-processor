@@ -27,21 +27,57 @@ TOP_MARGIN_FRACTION = 0.12
 CROWN_EXPAND = 0.45
 CHIN_EXPAND = 0.10
 
-_session = None
-_session_lock = threading.Lock()
+# One rembg session per model, loaded on demand so the heavyweight
+# birefnet-general (~1 GB download) costs nothing until a user picks it.
+_state_lock = threading.Lock()
+_sessions: dict[str, object] = {}
+_states: dict[str, str] = {name: "unloaded" for name in config.ALLOWED_MODELS}
+
+
+def model_states() -> dict[str, str]:
+    """Per-model state for /health: unloaded | loading | ready."""
+    with _state_lock:
+        return dict(_states)
+
+
+def _load_model(name: str) -> None:
+    try:
+        session = new_session(name)
+        tiny = Image.new("RGB", (32, 32), (128, 128, 128))
+        remove(tiny, session=session)
+        with _state_lock:
+            _sessions[name] = session
+            _states[name] = "ready"
+        log.info("Model %s ready", name)
+    except Exception:
+        with _state_lock:
+            _states[name] = "unloaded"
+        log.exception("Loading model %s failed", name)
+
+
+def ensure_model(name: str) -> str:
+    """Kick off a background load when needed; return the state right now."""
+    with _state_lock:
+        state = _states[name]
+        if state != "unloaded":
+            return state
+        _states[name] = "loading"
+    threading.Thread(
+        target=_load_model, args=(name,), name=f"load-{name}", daemon=True
+    ).start()
+    return "loading"
 
 
 def warmup() -> None:
-    """Build the rembg session and run a tiny image through it. Called from a
-    background thread at startup; /process waits on readiness via main.py."""
-    global _session
-    with _session_lock:
-        if _session is None:
-            _session = new_session(config.model_name())
+    """Load the default model. Called from a background thread at startup;
+    /process waits on readiness via main.py."""
+    default = config.model_name()
+    with _state_lock:
+        _states[default] = "loading"
     faces.prepare()
-    tiny = Image.new("RGB", (32, 32), (128, 128, 128))
-    remove(tiny, session=_session)
-    log.info("Model %s ready", config.model_name())
+    _load_model(default)
+    if model_states()[default] != "ready":
+        raise RuntimeError(f"default model {default} failed to load")
 
 
 def gpu_active() -> bool:
@@ -72,15 +108,21 @@ def process_image(
     height_px: int,
     bg_rgb: tuple[int, int, int],
     auto_crop: bool,
+    model: str,
 ) -> tuple[bytes, bool]:
-    """Return (png_bytes, face_detected)."""
+    """Return (png_bytes, face_detected). Caller guarantees `model` is ready."""
+    with _state_lock:
+        session = _sessions.get(model)
+    if session is None:
+        raise RuntimeError(f"model {model} not loaded")
+
     try:
         src = Image.open(io.BytesIO(image_bytes))
         src = ImageOps.exif_transpose(src).convert("RGB")
     except Exception:
         raise ValueError("Could not decode image") from None
 
-    cutout = remove(src, session=_session)  # RGBA, background transparent
+    cutout = remove(src, session=session)  # RGBA, background transparent
 
     aspect = width_px / height_px
     box = None

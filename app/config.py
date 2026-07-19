@@ -2,7 +2,7 @@
 
 import os
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 DEFAULT_PORT = 8765
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
@@ -18,7 +18,12 @@ DEV_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-# The RMS app is deployed on Vercel; accept any *.vercel.app origin by default.
+# The deployed RMS app. Additional origins: PHOTO_PROCESSOR_ORIGINS env var.
+PROD_ORIGINS = [
+    "https://rmsavisha.company",
+    "https://www.rmsavisha.company",
+]
+# Vercel preview/default deployments are also accepted.
 ORIGIN_REGEX = r"https://.*\.vercel\.app"
 
 YUNET_URL = (

@@ -18,7 +18,7 @@ app = FastAPI(title="RMS Photo Processor", version=config.VERSION, docs_url=None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.DEV_ORIGINS + config.extra_origins(),
+    allow_origins=config.PROD_ORIGINS + config.DEV_ORIGINS + config.extra_origins(),
     allow_origin_regex=config.ORIGIN_REGEX,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],

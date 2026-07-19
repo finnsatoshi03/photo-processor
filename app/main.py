@@ -142,7 +142,7 @@ async def process(request: Request):
         )
 
     try:
-        png, face_detected = await anyio.to_thread.run_sync(
+        png, face_detected, face_box = await anyio.to_thread.run_sync(
             pipeline.process_image,
             image_bytes,
             width_px,
@@ -162,6 +162,7 @@ async def process(request: Request):
         "width_px": width_px,
         "height_px": height_px,
         "face_detected": face_detected,
+        "face_box": face_box,
     }
 
 

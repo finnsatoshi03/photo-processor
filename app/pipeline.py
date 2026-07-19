@@ -168,8 +168,9 @@ def process_image(
     bg_rgb: tuple[int, int, int],
     auto_crop: bool,
     model: str,
-) -> tuple[bytes, bool]:
-    """Return (png_bytes, face_detected). Caller guarantees `model` is ready."""
+) -> tuple[bytes, bool, dict[str, int] | None]:
+    """Return (png_bytes, face_detected, face_box_in_output_px_or_None).
+    Caller guarantees `model` is ready."""
     with _state_lock:
         session = _sessions.get(model)
     if session is None:
@@ -185,10 +186,12 @@ def process_image(
 
     aspect = width_px / height_px
     box = None
-    face_detected = False
+    face = None
     if auto_crop:
-        box = _face_crop_box(np.asarray(src), aspect)
-        face_detected = box is not None
+        face = faces.detect_face(np.asarray(src))
+        if face is not None:
+            box = _crop_box_from_face(face, aspect)
+    face_detected = face is not None
     if box is None:
         box = _center_cover_box(src.width, src.height, aspect)
 
@@ -199,16 +202,27 @@ def process_image(
     out = canvas.resize((width_px, height_px), Image.LANCZOS)
     buf = io.BytesIO()
     out.save(buf, format="PNG", dpi=(DPI, DPI))
-    return buf.getvalue(), face_detected
+
+    # Face box mapped into output-image pixels (informational; used by the
+    # client's attire-overlay auto-fit). None when no face was detected.
+    face_box = None
+    if face is not None:
+        fx, fy, fw, fh = face
+        sx = width_px / crop_w
+        sy = height_px / crop_h
+        face_box = {
+            "x": round((fx - left) * sx),
+            "y": round((fy - top) * sy),
+            "w": round(fw * sx),
+            "h": round(fh * sy),
+        }
+    return buf.getvalue(), face_detected, face_box
 
 
-def _face_crop_box(
-    rgb: np.ndarray, aspect: float
-) -> tuple[float, float, float, float] | None:
+def _crop_box_from_face(
+    face: tuple[float, float, float, float], aspect: float
+) -> tuple[float, float, float, float]:
     """Crop box (left, top, w, h) centering the head, may exceed image bounds."""
-    face = faces.detect_face(rgb)
-    if face is None:
-        return None
     fx, fy, fw, fh = face
     head_top = fy - CROWN_EXPAND * fh
     head_h = fh * (1 + CROWN_EXPAND + CHIN_EXPAND)

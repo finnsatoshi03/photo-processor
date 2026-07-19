@@ -1,0 +1,9 @@
+# Approved dependency list (see project brief): fastapi, uvicorn, rembg,
+# onnxruntime(-gpu), opencv, pillow. Everything else on the machine is a
+# transitive dependency of these.
+fastapi==0.115.12
+uvicorn==0.34.2
+rembg==2.0.66
+onnxruntime==1.20.1
+opencv-python-headless==4.10.0.84
+pillow==11.1.0

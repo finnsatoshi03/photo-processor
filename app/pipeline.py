@@ -8,6 +8,7 @@ edges simply gains seamless background instead of black bars.
 
 import io
 import logging
+import os
 import threading
 
 import numpy as np
@@ -32,6 +33,19 @@ CHIN_EXPAND = 0.10
 _state_lock = threading.Lock()
 _sessions: dict[str, object] = {}
 _states: dict[str, str] = {name: "unloaded" for name in config.ALLOWED_MODELS}
+# Download progress per loading model: {"done": bytes, "total": bytes}.
+_progress: dict[str, dict[str, int]] = {}
+
+# rembg's own model sources (its pooch downloader hides progress in a temp
+# file, so we fetch the same files ourselves and report exact byte counts;
+# rembg then finds them in the cache and skips its download).
+MODEL_URLS = {
+    "u2net": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx",
+    "birefnet-general": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-epoch_244.onnx",
+}
+MODEL_FILES = {"u2net": "u2net.onnx", "birefnet-general": "birefnet-general.onnx"}
+# Fallback totals when the server sends no Content-Length.
+MODEL_TOTALS = {"u2net": 176_000_000, "birefnet-general": 975_000_000}
 
 
 def model_states() -> dict[str, str]:
@@ -40,8 +54,50 @@ def model_states() -> dict[str, str]:
         return dict(_states)
 
 
+def model_progress() -> dict[str, dict[str, int]]:
+    """Download progress for models currently loading, for /health."""
+    with _state_lock:
+        return {k: dict(v) for k, v in _progress.items()}
+
+
+def _predownload(name: str) -> None:
+    """Fetch the model file with byte-accurate progress. Best-effort: on any
+    failure rembg's own downloader takes over (without progress reporting)."""
+    import urllib.request
+
+    dest = os.path.join(config.cache_dir(), MODEL_FILES[name])
+    if os.path.exists(dest):
+        return
+    tmp = dest + ".part"
+    req = urllib.request.Request(
+        MODEL_URLS[name], headers={"User-Agent": "rms-photo-processor"}
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as out:
+        total = int(resp.headers.get("Content-Length") or 0) or MODEL_TOTALS[name]
+        done = 0
+        while True:
+            chunk = resp.read(256 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+            done += len(chunk)
+            with _state_lock:
+                _progress[name] = {"done": done, "total": total}
+    os.replace(tmp, dest)
+    log.info("Downloaded %s (%d bytes)", MODEL_FILES[name], done)
+
+
 def _load_model(name: str) -> None:
     try:
+        try:
+            _predownload(name)
+        except Exception as exc:
+            log.warning("Pre-download of %s failed (%s); rembg will retry", name, exc)
+        finally:
+            # Session init follows; the UI switches to its indeterminate
+            # "preparing" message once progress disappears.
+            with _state_lock:
+                _progress.pop(name, None)
         session = new_session(name)
         tiny = Image.new("RGB", (32, 32), (128, 128, 128))
         remove(tiny, session=session)
@@ -53,6 +109,9 @@ def _load_model(name: str) -> None:
         with _state_lock:
             _states[name] = "unloaded"
         log.exception("Loading model %s failed", name)
+    finally:
+        with _state_lock:
+            _progress.pop(name, None)
 
 
 def ensure_model(name: str) -> str:

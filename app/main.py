@@ -66,6 +66,8 @@ def health():
         # Per-model readiness so clients can offer a model picker and show
         # download progress states: unloaded | loading | ready.
         "models": pipeline.model_states(),
+        # {"<model>": {"done": bytes, "total": approx bytes}} while loading.
+        "model_progress": pipeline.model_progress(),
     }
 
 
